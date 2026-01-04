@@ -19,3 +19,6 @@ def login(username, password):
 def logout():
     if os.path.exists(SESSION_FILE):
         os.remove(SESSION_FILE)
+
+def is_logged_in():
+    return os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 0
