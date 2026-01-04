@@ -1,9 +1,9 @@
-from instagrapi import Client
+from instagrapi import Client as InstaClient
 import os
 
 SESSION_FILE = "data/session.json"
 
-cl = Client()
+cl = InstaClient()
 
 def load_session():
     if os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 0:
