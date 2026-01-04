@@ -1,13 +1,23 @@
 from pyrogram import Client, filters
 from config import *
 
-from insta.client import login, logout, load_session, is_logged_in, cl
-from insta.unfollowers import get_unfollowers
+from insta.client import (
+    login,
+    logout,
+    load_session,
+    is_logged_in,
+    cl
+)
+
+from insta.unfollowers import (
+    get_unfollowers_safe,
+    init_unfollowers_baseline
+)
+
 from insta.mentions import add_mention, remove_mention
 from insta.story_mentions import mention_users_on_story
 
 import os
-import time
 from datetime import datetime
 
 
@@ -34,7 +44,7 @@ def owner_only(func):
 
 
 # =========================
-# LOGIN COMMAND
+# LOGIN
 # =========================
 @app.on_message(filters.command("login") & filters.private)
 @owner_only
@@ -48,7 +58,7 @@ async def login_cmd(_, msg):
 
 
 # =========================
-# LOGOUT COMMAND
+# LOGOUT
 # =========================
 @app.on_message(filters.command("logout") & filters.private)
 @owner_only
@@ -61,7 +71,7 @@ async def logout_cmd(_, msg):
 
 
 # =========================
-# STATUS COMMAND
+# STATUS
 # =========================
 @app.on_message(filters.command("status") & filters.private)
 @owner_only
@@ -73,7 +83,7 @@ async def status_cmd(_, msg):
 
 
 # =========================
-# WHOAMI COMMAND
+# WHOAMI
 # =========================
 @app.on_message(filters.command("whoami") & filters.private)
 @owner_only
@@ -84,7 +94,7 @@ async def whoami_cmd(_, msg):
     try:
         me = cl.account_info()
         await msg.reply(
-            f"👤 Instagram Account Info:\n\n"
+            "👤 Instagram Account Info:\n\n"
             f"• Username: @{me.username}\n"
             f"• Full name: {me.full_name}\n"
             f"• Followers: {me.follower_count}\n"
@@ -92,11 +102,11 @@ async def whoami_cmd(_, msg):
             f"• Posts: {me.media_count}"
         )
     except Exception as e:
-        await msg.reply(f"⚠️ Error fetching account info: {e}")
+        await msg.reply(f"⚠️ Error: {e}")
 
 
 # =========================
-# SESSION INFO COMMAND
+# SESSION INFO
 # =========================
 @app.on_message(filters.command("sessioninfo") & filters.private)
 @owner_only
@@ -106,22 +116,22 @@ async def sessioninfo_cmd(_, msg):
 
     try:
         session_file = "data/session.json"
-        last_login_ts = os.path.getmtime(session_file)
-        last_login_time = datetime.fromtimestamp(last_login_ts)
+        ts = os.path.getmtime(session_file)
+        last_login = datetime.fromtimestamp(ts)
 
         await msg.reply(
             "🧾 Session Info:\n\n"
-            f"• Status: Logged in\n"
-            f"• Last login: {last_login_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"• Session file: session.json\n"
-            f"• Session valid: Yes"
+            "• Status: Logged in\n"
+            f"• Last login: {last_login.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            "• Session file: session.json\n"
+            "• Session valid: Yes"
         )
     except Exception as e:
-        await msg.reply(f"⚠️ Error reading session info: {e}")
+        await msg.reply(f"⚠️ Error: {e}")
 
 
 # =========================
-# UNFOLLOWERS COMMAND
+# UNFOLLOWERS (SAFE)
 # =========================
 @app.on_message(filters.command("unfollowers") & filters.private)
 @owner_only
@@ -129,29 +139,43 @@ async def unfollowers_cmd(_, msg):
     if not load_session():
         return await msg.reply("❌ Login first using /login")
 
-    await msg.reply("⏳ Fetching unfollowers, please wait...")
+    # INIT BASELINE
+    if "init" in msg.text.lower():
+        try:
+            await msg.reply("⏳ Creating followers baseline (safe mode)...")
+            count = init_unfollowers_baseline()
+            await msg.reply(
+                "✅ Baseline created successfully\n\n"
+                f"👥 Followers stored: {count}\n"
+                "⏳ Next safe check: after 12 hours"
+            )
+        except Exception as e:
+            await msg.reply(f"⚠️ {e}")
+        return
 
+    # NORMAL SAFE CHECK
     try:
-        users = get_unfollowers()
+        await msg.reply("⏳ Checking unfollowers safely. Please wait...")
+        users = get_unfollowers_safe()
 
         if not users:
-            return await msg.reply("✅ No unfollowers found")
+            return await msg.reply("✅ No unfollowers since last check")
 
         os.makedirs("exports", exist_ok=True)
-        file_path = "exports/unfollowers.txt"
+        path = "exports/unfollowers.txt"
 
-        with open(file_path, "w") as f:
+        with open(path, "w") as f:
             for u in users:
                 f.write(u + "\n")
 
-        await msg.reply_document(file_path)
+        await msg.reply_document(path)
 
     except Exception as e:
-        await msg.reply(f"⚠️ Error: {e}")
+        await msg.reply(f"⚠️ {e}")
 
 
 # =========================
-# ADD MENTION USER
+# ADD MENTION
 # =========================
 @app.on_message(filters.command("addmention") & filters.private)
 @owner_only
@@ -165,7 +189,7 @@ async def add_mention_cmd(_, msg):
 
 
 # =========================
-# REMOVE MENTION USER
+# REMOVE MENTION
 # =========================
 @app.on_message(filters.command("rmmention") & filters.private)
 @owner_only
@@ -187,8 +211,7 @@ async def mention_all_cmd(_, msg):
     if not load_session():
         return await msg.reply("❌ Login first using /login")
 
-    await msg.reply("⏳ Processing story mentions. This will take time...")
-
+    await msg.reply("⏳ Processing story mentions slowly...")
     result = mention_users_on_story()
     await msg.reply(result)
 
@@ -196,5 +219,5 @@ async def mention_all_cmd(_, msg):
 # =========================
 # START BOT
 # =========================
-print("🤖 Insta Admin Bot running...")
+print("🤖 Insta Admin Bot running (SAFE MODE)...")
 app.run()
