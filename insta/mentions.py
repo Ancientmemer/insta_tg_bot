@@ -1,5 +1,4 @@
-import json, os, time, random
-from config import *
+import json, os
 
 FILE = "data/mentions.json"
 
@@ -22,6 +21,3 @@ def remove_mention(username):
     if username in data:
         data.remove(username)
         save_mentions(data)
-
-def human_delay():
-    time.sleep(random.randint(MENTION_DELAY_MIN, MENTION_DELAY_MAX))
