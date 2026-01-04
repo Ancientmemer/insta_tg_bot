@@ -12,9 +12,9 @@ BASELINE_FILE = os.path.join(DATA_DIR, "followers_baseline.json")
 # =========================
 # SAFETY CONFIG
 # =========================
-MAX_PAGES = 4              # max pages per fetch
-PAGE_SIZE = 80             # users per page
-PAGE_DELAY = (6, 12)       # seconds between pages
+FOLLOWERS_LIMIT = 300      # max followers to fetch
+FOLLOWING_LIMIT = 300      # max following to fetch
+PAGE_DELAY = (6, 12)       # delay between chunks
 FOLLOWERS_FOLLOWING_GAP = (120, 240)  # 2–4 min gap
 MIN_HOURS_BETWEEN_CHECKS = 12
 
@@ -22,8 +22,8 @@ MIN_HOURS_BETWEEN_CHECKS = 12
 # =========================
 # UTILS
 # =========================
-def _sleep_range(rng):
-    time.sleep(random.randint(rng[0], rng[1]))
+def _sleep():
+    time.sleep(random.randint(*PAGE_DELAY))
 
 
 def _now():
@@ -39,12 +39,15 @@ def _load_baseline():
 
 def _save_baseline(followers_set):
     os.makedirs(DATA_DIR, exist_ok=True)
-    data = {
-        "last_checked": _now().isoformat(),
-        "followers": sorted(list(followers_set))
-    }
     with open(BASELINE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(
+            {
+                "last_checked": _now().isoformat(),
+                "followers": sorted(list(followers_set))
+            },
+            f,
+            indent=2
+        )
 
 
 def _too_soon(last_checked):
@@ -57,40 +60,26 @@ def _too_soon(last_checked):
 # =========================
 def _safe_fetch_followers(user_id):
     followers = set()
-    pages = 0
 
-    for user, _ in cl.user_followers_v1_chunked(
-        user_id,
-        amount=PAGE_SIZE
-    ):
+    users = cl.user_followers(user_id, amount=FOLLOWERS_LIMIT)
+    for i, user in enumerate(users.values(), start=1):
         followers.add(user.username)
-
-        if len(followers) % PAGE_SIZE == 0:
-            pages += 1
-            if pages >= MAX_PAGES:
-                break
-            _sleep_range(PAGE_DELAY)
+        if i % 50 == 0:
+            _sleep()
 
     return followers
 
 
 def _safe_fetch_following(user_id):
     following = set()
-    pages = 0
 
-    _sleep_range(FOLLOWERS_FOLLOWING_GAP)
+    time.sleep(random.randint(*FOLLOWERS_FOLLOWING_GAP))
 
-    for user, _ in cl.user_following_v1_chunked(
-        user_id,
-        amount=PAGE_SIZE
-    ):
+    users = cl.user_following(user_id, amount=FOLLOWING_LIMIT)
+    for i, user in enumerate(users.values(), start=1):
         following.add(user.username)
-
-        if len(following) % PAGE_SIZE == 0:
-            pages += 1
-            if pages >= MAX_PAGES:
-                break
-            _sleep_range(PAGE_DELAY)
+        if i % 50 == 0:
+            _sleep()
 
     return following
 
@@ -104,7 +93,6 @@ def init_unfollowers_baseline():
 
     followers = _safe_fetch_followers(cl.user_id)
     _save_baseline(followers)
-
     return len(followers)
 
 
@@ -126,7 +114,5 @@ def get_unfollowers_safe():
 
     unfollowers = sorted(list(current_following - current_followers))
 
-    # update baseline slowly (followers only)
     _save_baseline(current_followers)
-
     return unfollowers
