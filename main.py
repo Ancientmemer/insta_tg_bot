@@ -1,223 +1,261 @@
+import os, json, asyncio
+from datetime import datetime, timedelta
 from pyrogram import Client, filters
+
 from config import *
-
 from insta.client import (
-    login,
-    logout,
-    load_session,
-    is_logged_in,
-    cl
+    login, logout, load_session,
+    current_username, get_client
+)
+from insta.fetch import (
+    fetch_followers,
+    fetch_following,
+    compare_unfollowers
+)
+from insta.mention_assistant import (
+    load_mentions,
+    load_state,
+    save_state,
+    detect_latest_story,
+    random_delay
 )
 
-from insta.unfollowers import (
-    get_unfollowers_safe,
-    init_unfollowers_baseline
-)
+STATE_FILE = "data/state.json"
+EXPORT_FILE = "exports/unfollowers.txt"
 
-from insta.mentions import add_mention, remove_mention
-from insta.story_mentions import mention_users_on_story
-
-import os
-from datetime import datetime
-
-
-# =========================
-# TELEGRAM BOT INIT
-# =========================
 app = Client(
-    "insta_admin_bot",
+    "insta_full_safe_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-
-# =========================
-# OWNER ONLY DECORATOR
-# =========================
+# ---------------- UTILS ----------------
 def owner_only(func):
-    async def wrapper(client, message):
-        if message.from_user.id != OWNER_ID:
+    async def wrapper(c, m):
+        if m.from_user.id != OWNER_ID:
             return
-        return await func(client, message)
+        return await func(c, m)
     return wrapper
 
+def now():
+    return datetime.utcnow()
 
-# =========================
-# LOGIN
-# =========================
+def load_global_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "account": None,
+            "followers_time": None,
+            "following_time": None,
+            "mode": None  # data / mention
+        }
+    return json.load(open(STATE_FILE))
+
+def save_global_state(s):
+    json.dump(s, open(STATE_FILE, "w"), indent=2)
+
+# ---------------- LOGIN ----------------
 @app.on_message(filters.command("login") & filters.private)
 @owner_only
-async def login_cmd(_, msg):
-    try:
-        _, username, password = msg.text.split(maxsplit=2)
-        login(username, password)
-        await msg.reply("✅ Instagram login successful")
-    except:
-        await msg.reply("❌ Usage: /login username password")
+async def _login(_, m):
+    _, u, p = m.text.split(maxsplit=2)
+    login(u, p)
+    save_global_state({
+        "account": u,
+        "followers_time": None,
+        "following_time": None,
+        "mode": None
+    })
+    await m.reply(f"✅ Logged in as @{u}")
 
-
-# =========================
-# LOGOUT
-# =========================
-@app.on_message(filters.command("logout") & filters.private)
-@owner_only
-async def logout_cmd(_, msg):
-    if not is_logged_in():
-        return await msg.reply("ℹ️ Already logged out from Instagram")
-
-    logout()
-    await msg.reply("✅ Logged out successfully")
-
-
-# =========================
-# STATUS
-# =========================
+# ---------------- STATUS ----------------
 @app.on_message(filters.command("status") & filters.private)
 @owner_only
-async def status_cmd(_, msg):
-    if is_logged_in():
-        await msg.reply("🟢 Status: Logged in to Instagram")
-    else:
-        await msg.reply("🔴 Status: Logged out from Instagram")
+async def _status(_, m):
+    u = current_username()
+    if not u:
+        return await m.reply("❌ Not logged in")
+    await m.reply(f"🟢 Logged in as @{u}")
 
-
-# =========================
-# WHOAMI
-# =========================
-@app.on_message(filters.command("whoami") & filters.private)
+# ---------------- FOLLOWERS ----------------
+@app.on_message(filters.command("followers") & filters.private)
 @owner_only
-async def whoami_cmd(_, msg):
+async def _followers(_, m):
     if not load_session():
-        return await msg.reply("❌ Not logged in. Use /login first")
+        return await m.reply("❌ Login first")
 
-    try:
-        me = cl.account_info()
-        await msg.reply(
-            "👤 Instagram Account Info:\n\n"
-            f"• Username: @{me.username}\n"
-            f"• Full name: {me.full_name}\n"
-            f"• Followers: {me.follower_count}\n"
-            f"• Following: {me.following_count}\n"
-            f"• Posts: {me.media_count}"
-        )
-    except Exception as e:
-        await msg.reply(f"⚠️ Error: {e}")
+    s = load_global_state()
+    if s["mode"] == "mention":
+        return await m.reply("⚠️ Mention assistant running. Stop it first.")
 
+    if s["followers_time"]:
+        last = datetime.fromisoformat(s["followers_time"])
+        if now() - last < timedelta(hours=24):
+            return await m.reply("⏳ Followers already fetched today")
 
-# =========================
-# SESSION INFO
-# =========================
-@app.on_message(filters.command("sessioninfo") & filters.private)
+    s["mode"] = "data"
+    save_global_state(s)
+
+    count = fetch_followers()
+    s["followers_time"] = now().isoformat()
+    save_global_state(s)
+
+    await m.reply(
+        f"✅ Followers fetched: {count}\n"
+        "⏳ Run /following after 15 minutes"
+    )
+
+# ---------------- FOLLOWING ----------------
+@app.on_message(filters.command("following") & filters.private)
 @owner_only
-async def sessioninfo_cmd(_, msg):
-    if not is_logged_in():
-        return await msg.reply("🔴 No active Instagram session")
+async def _following(_, m):
+    if not load_session():
+        return await m.reply("❌ Login first")
 
-    try:
-        session_file = "data/session.json"
-        ts = os.path.getmtime(session_file)
-        last_login = datetime.fromtimestamp(ts)
+    s = load_global_state()
+    if not s["followers_time"]:
+        return await m.reply("❌ Run /followers first")
 
-        await msg.reply(
-            "🧾 Session Info:\n\n"
-            "• Status: Logged in\n"
-            f"• Last login: {last_login.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            "• Session file: session.json\n"
-            "• Session valid: Yes"
-        )
-    except Exception as e:
-        await msg.reply(f"⚠️ Error: {e}")
+    last = datetime.fromisoformat(s["followers_time"])
+    if now() - last < timedelta(minutes=15):
+        return await m.reply("⏳ Wait 15 minutes after /followers")
 
+    if s["following_time"]:
+        lf = datetime.fromisoformat(s["following_time"])
+        if now() - lf < timedelta(hours=24):
+            return await m.reply("⏳ Following already fetched today")
 
-# =========================
-# UNFOLLOWERS (SAFE)
-# =========================
+    count = fetch_following()
+    s["following_time"] = now().isoformat()
+    save_global_state(s)
+
+    await m.reply(
+        f"✅ Following fetched: {count}\n"
+        "📂 You can now use /unfollowers"
+    )
+
+# ---------------- UNFOLLOWERS (LOCAL) ----------------
 @app.on_message(filters.command("unfollowers") & filters.private)
 @owner_only
-async def unfollowers_cmd(_, msg):
-    if not load_session():
-        return await msg.reply("❌ Login first using /login")
-
-    # INIT BASELINE
-    if "init" in msg.text.lower():
-        try:
-            await msg.reply("⏳ Creating followers baseline (safe mode)...")
-            count = init_unfollowers_baseline()
-            await msg.reply(
-                "✅ Baseline created successfully\n\n"
-                f"👥 Followers stored: {count}\n"
-                "⏳ Next safe check: after 12 hours"
-            )
-        except Exception as e:
-            await msg.reply(f"⚠️ {e}")
-        return
-
-    # NORMAL SAFE CHECK
+async def _unfollowers(_, m):
     try:
-        await msg.reply("⏳ Checking unfollowers safely. Please wait...")
-        users = get_unfollowers_safe()
-
-        if not users:
-            return await msg.reply("✅ No unfollowers since last check")
-
+        users = compare_unfollowers()
         os.makedirs("exports", exist_ok=True)
-        path = "exports/unfollowers.txt"
-
-        with open(path, "w") as f:
+        with open(EXPORT_FILE, "w") as f:
             for u in users:
                 f.write(u + "\n")
-
-        await msg.reply_document(path)
-
+        await m.reply_document(EXPORT_FILE)
     except Exception as e:
-        await msg.reply(f"⚠️ {e}")
+        await m.reply(f"⚠️ {e}")
 
-
-# =========================
-# ADD MENTION
-# =========================
+# ---------------- ADD MENTION ----------------
 @app.on_message(filters.command("addmention") & filters.private)
 @owner_only
-async def add_mention_cmd(_, msg):
-    try:
-        _, username = msg.text.split(maxsplit=1)
-        add_mention(username)
-        await msg.reply(f"✅ Added @{username} to mention list")
-    except:
-        await msg.reply("❌ Usage: /addmention username")
+async def _addmention(_, m):
+    _, u = m.text.split(maxsplit=1)
+    path = "data/mentions.json"
+    data = json.load(open(path))
+    if u not in data["users"]:
+        data["users"].append(u)
+    json.dump(data, open(path, "w"), indent=2)
+    await m.reply(f"✅ Added @{u}")
 
-
-# =========================
-# REMOVE MENTION
-# =========================
+# ---------------- REMOVE MENTION ----------------
 @app.on_message(filters.command("rmmention") & filters.private)
 @owner_only
-async def remove_mention_cmd(_, msg):
-    try:
-        _, username = msg.text.split(maxsplit=1)
-        remove_mention(username)
-        await msg.reply(f"❌ Removed @{username} from mention list")
-    except:
-        await msg.reply("❌ Usage: /rmmention username")
+async def _rmmention(_, m):
+    _, u = m.text.split(maxsplit=1)
+    path = "data/mentions.json"
+    data = json.load(open(path))
+    if u not in data["users"]:
+        return await m.reply("⚠️ Not in list")
+    data["users"].remove(u)
+    json.dump(data, open(path, "w"), indent=2)
+    await m.reply(f"❌ Removed @{u}")
 
-
-# =========================
-# MENTION ALL (STORY)
-# =========================
-@app.on_message(filters.command("mentionall") & filters.private)
+# ---------------- LIST MENTIONS ----------------
+@app.on_message(filters.command("mentions") & filters.private)
 @owner_only
-async def mention_all_cmd(_, msg):
+async def _mentions(_, m):
+    users = load_mentions()
+    if not users:
+        return await m.reply("📭 Mention list empty")
+    txt = "📌 Mention list:\n\n"
+    for u in users:
+        txt += f"• @{u}\n"
+    await m.reply(txt)
+
+# ---------------- START MENTION ASSISTANT ----------------
+@app.on_message(filters.command("mentionstart") & filters.private)
+@owner_only
+async def _mentionstart(_, m):
     if not load_session():
-        return await msg.reply("❌ Login first using /login")
+        return await m.reply("❌ Login first")
 
-    await msg.reply("⏳ Processing story mentions slowly...")
-    result = mention_users_on_story()
-    await msg.reply(result)
+    s = load_global_state()
+    if s["mode"] == "data":
+        return await m.reply("⚠️ Data fetch mode active. Wait.")
 
+    state = load_state()
+    if state["running"]:
+        return await m.reply("⚠️ Assistant already running")
 
-# =========================
-# START BOT
-# =========================
-print("🤖 Insta Admin Bot running (SAFE MODE)...")
+    s["mode"] = "mention"
+    save_global_state(s)
+
+    state["running"] = True
+    save_state(state)
+
+    cl = get_client()
+    await m.reply("👀 Waiting for new story (checking every 2 minutes)...")
+
+    while True:
+        await asyncio.sleep(120)
+        state = load_state()
+        if not state["running"]:
+            break
+
+        sid = detect_latest_story(cl)
+        if sid and sid != state["last_story_id"]:
+            state["last_story_id"] = sid
+            save_state(state)
+
+            users = load_mentions()
+            await m.reply("📸 New story detected!")
+
+            for u in users:
+                d = random_delay()
+                await asyncio.sleep(d)
+                await m.reply(f"👉 Mention @{u} (waited {d}s)")
+
+            await m.reply("✅ Mention assistant finished")
+            state["running"] = False
+            save_state(state)
+
+            s["mode"] = None
+            save_global_state(s)
+            break
+
+# ---------------- STOP MENTION ASSISTANT ----------------
+@app.on_message(filters.command("mentionstop") & filters.private)
+@owner_only
+async def _mentionstop(_, m):
+    state = load_state()
+    state["running"] = False
+    save_state(state)
+
+    s = load_global_state()
+    s["mode"] = None
+    save_global_state(s)
+
+    await m.reply("🛑 Mention assistant stopped")
+
+# ---------------- LOGOUT ----------------
+@app.on_message(filters.command("logout") & filters.private)
+@owner_only
+async def _logout(_, m):
+    logout()
+    await m.reply("✅ Logged out safely")
+
+print("🤖 Full Safe Insta Bot running...")
 app.run()
