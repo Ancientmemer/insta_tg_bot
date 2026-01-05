@@ -1,50 +1,39 @@
-from instagrapi import Client as InstaClient
+from instagrapi import Client
 import os
 
 SESSION_FILE = "data/session.json"
+cl = Client()
 
-cl = InstaClient()
-
-
-def _reset_client():
+def reset_client():
     global cl
-    cl = InstaClient()
+    cl = Client()
 
+def login(username, password):
+    reset_client()
+    cl.login(username, password)
+    cl.dump_settings(SESSION_FILE)
 
 def load_session():
-    if os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 0:
+    if os.path.exists(SESSION_FILE):
         cl.load_settings(SESSION_FILE)
         cl.login_by_sessionid(cl.sessionid)
         return True
     return False
 
-
-def login(username, password):
-    global cl
-
-    # reset client before login (VERY IMPORTANT)
-    _reset_client()
-
-    cl.login(username, password)
-    cl.dump_settings(SESSION_FILE)
-
-
 def logout():
-    global cl
-
     try:
-        # logout from instagram side
         cl.logout()
     except:
         pass
-
-    # remove local session
     if os.path.exists(SESSION_FILE):
         os.remove(SESSION_FILE)
+    reset_client()
 
-    # reset client completely
-    _reset_client()
+def current_username():
+    try:
+        return cl.account_info().username
+    except:
+        return None
 
-
-def is_logged_in():
-    return os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 0
+def get_client():
+    return cl
